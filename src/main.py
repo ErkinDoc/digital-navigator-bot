@@ -233,6 +233,11 @@ async def handle_record_request(message: types.Message):
         reply_markup=keyboard
     )
 
+# Защита: игнорируем любые полученные файлы (не пересылаем обратно)
+@dp.message(F.document)
+async def ignore_files(message: types.Message):
+    pass  # Бот молчит — ничего не делает
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)

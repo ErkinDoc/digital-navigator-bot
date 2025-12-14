@@ -329,7 +329,7 @@ async def process_reaction(callback: types.CallbackQuery, state: FSMContext):
         "<b>🚀 С сопровождением Dr.Erkin</b> — личная сессия + план на 30 дней\n\n"
         "<i>Выберите вариант ниже:</i>",
         reply_markup=builder.as_markup()
-    )
+    ) 
     await state.set_state(NavigatorStates.waiting_final_choice)
 
 # Уровень 6: Конверсия (Самостоятельный путь)
@@ -513,4 +513,5 @@ if __name__ == "__main__":
         logging.info("Bot shut down gracefully.")
     except Exception as e:
         logging.error(f"Fatal error: {e}")
+
 

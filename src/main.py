@@ -4,6 +4,7 @@ import os
 import sys
 from dotenv import load_dotenv
 
+# Импорты aiogram
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -11,8 +12,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties # <-- ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ: Новый импорт для parse_mode
 
-from aiohttp import web # <--- ДОБАВЛЕНО ДЛЯ RENDER
+# Импорты для хостинга/ИИ
+from aiohttp import web # <-- ИСПРАВЛЕНИЕ ДЛЯ RENDER: Для фиктивного веб-сервера
 import openai
 
 # --- 1. НАСТРОЙКИ И КОНФИГУРАЦИЯ ---
@@ -23,17 +26,18 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Ссылка на твой личный профиль для конверсии
 CONTACT_LINK = "https://t.me/DrErkin" 
 
+# Проверка и инициализация
 if not BOT_TOKEN or not OPENAI_API_KEY:
     sys.exit("Ошибка: Не найдены BOT_TOKEN или OPENAI_API_KEY в .env файле")
 
-# Настройка клиента OpenAI
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML") # parse_mode HTML для жирного текста
+# Инициализация Bot с исправленным синтаксисом parse_mode (для aiogram 3.7+)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# --- RENDER HEALTH CHECK (НОВЫЙ БЛОК ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ С ПОРТАМИ) ---
+# --- 2. RENDER HEALTH CHECK (КОД ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ С ПОРТАМИ) ---
 async def health_check(request):
     """Простой HTTP ответ для обмана Render, чтобы он не убил процесс."""
     return web.Response(text="Bot is running OK")
@@ -44,13 +48,14 @@ async def start_web_server():
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
+    # Получаем порт из переменной окружения Render
     port = int(os.environ.get("PORT", 8080)) 
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logging.info(f"Web server started on port {port}")
 # --------------------------------------------------------------------------
 
-# --- 2. ЛОГИКА СОСТОЯНИЙ И БАЗА ЗНАНИЙ (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ) ---
+# --- 3. ЛОГИКА СОСТОЯНИЙ И БАЗА ЗНАНИЙ ---
 
 class NavigatorStates(StatesGroup):
     waiting_category_text = State()
@@ -71,9 +76,10 @@ REACTION_BRANCHES = {
     "reaction_4": {"text": "Если не срезонировало — возможно, проблема лежит глубже или в другой плоскости. Начните с 'Самодиагностики', чтобы исключить ложные следы.", "action_file": "files/samodiagnostika.pdf" },
 }
 
-# --- 3. ФУНКЦИИ ИИ И ХЕНДЛЕРЫ (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ) ---
+# --- 4. ФУНКЦИИ ИИ И ХЕНДЛЕРЫ ---
 
 async def classify_text(user_text: str) -> str:
+    """Определяет категорию боли пользователя через GPT. Включает Fallback."""
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -90,7 +96,6 @@ async def classify_text(user_text: str) -> str:
         return "Не понимаю, что со мной"
     except Exception as e:
         logging.error(f"OpenAI Error: {e}")
-        # Если OpenAI не работает (429), даем безопасный путь
         return "Не понимаю, что со мной" 
 
 @dp.message(CommandStart())
@@ -119,7 +124,6 @@ async def process_category_text(message: types.Message, state: FSMContext):
     data = CATEGORIES[category]
     await status_msg.delete()
     
-    # Психологический комментарий перед файлом (присоединение)
     await message.answer(f"<b>{data['comment']}</b>")
     await asyncio.sleep(1)
     
@@ -195,18 +199,19 @@ async def handle_expert_path(callback: types.CallbackQuery):
         reply_markup=builder.as_markup()
     )
 
-# --- 4. ЗАПУСК ПРОГРАММЫ ---
+# --- 5. ЗАПУСК ПРОГРАММЫ (MAIN) ---
 
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     
-    # 1. Запуск фиктивного веб-сервера для Render
+    # Запуск фиктивного веб-сервера для Render и одновременный запуск поллинга
     await start_web_server()
     
     print("Бот запущен...")
-    # 2. Запуск поллинга Telegram
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    # Убедимся, что все асинхронные задачи (веб-сервер и поллинг) работают вместе
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot shut down gracefully.")

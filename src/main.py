@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ===== ВАЖНО: ВСТАВЬТЕ ВАШ РЕАЛЬНЫЙ ТОКЕН ЗДЕСЬ =====
-BOT_TOKEN = 8149187291:AAHZ7Qyn9GQVZdNPcarxTAo3BSl62qZMrAQ
+BOT_TOKEN = "8149187291:AAHZ7Qyn9GQVZdNPcarxTAo3BSl62qZMrAQ"
 # ====================================================
 
 # Инициализация
@@ -313,3 +313,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

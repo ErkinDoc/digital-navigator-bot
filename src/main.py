@@ -1,522 +1,315 @@
 import asyncio
 import logging
-import os
-import sys
-from datetime import datetime
-from dotenv import load_dotenv
-import json
-
-# Импорты aiogram
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
-from aiohttp import web
-import openai
 
-# --- 1. НАСТРОЙКИ И КОНФИГУРАЦИЯ ---
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_ID = os.getenv("ADMIN_ID")  # Для аналитики
+# Импортируем наши модули
+from classifiers.critical_filter import CriticalRequestClassifier, MessageType, ClassificationResult
+from responses.disclaimer_variants import DisclaimerManager
 
-# Ссылки для конверсии (разные для разных путей)
-CONTACT_LINK_SELF = "https://t.me/DrErkin?start=feedback"
-CONTACT_LINK_EXPERT = "https://t.me/DrErkin?start=consult"
-SELF_HELP_CHANNEL = "https://t.me/drerkin_navigator_bot"  # Ваш канал
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Проверка и инициализация
-# Проверка и инициализация
-if not BOT_TOKEN:
-    logging.error("BOT_TOKEN не найден. Проверьте переменные окружения в Render.")
-    # Не завершаем работу, а пытаемся продолжить
-if not OPENAI_API_KEY:
-    logging.error("OPENAI_API_KEY не найден. Функция ИИ не будет работать.")
+# ===== ВАЖНО: ВСТАВЬТЕ ВАШ РЕАЛЬНЫЙ ТОКЕН ЗДЕСЬ =====
+BOT_TOKEN = 8149187291:AAHZ7Qyn9GQVZdNPcarxTAo3BSl62qZMrAQ
+# ====================================================
 
-client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)  # Асинхронный клиент
+# Инициализация
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализация Bot
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+# Инициализация компонентов
+classifier = CriticalRequestClassifier()
+disclaimer_manager = DisclaimerManager()
 
-# --- 2. RENDER HEALTH CHECK и WEB SERVER ---
-async def health_check(request):
-    """Простой HTTP ответ для обмана Render."""
-    return web.Response(text="Bot is running OK")
+# Состояния FSM
+class QuestionnaireStates(StatesGroup):
+    Q1_SYMPTOMS = State()
+    Q2_DURATION = State()
+    Q3_ACTION_PLAN = State()
+    AWAITING_CRITICAL_CHOICE = State()  # Новое состояние для ожидания выбора
 
-async def start_web_server():
-    """Запускает фиктивный веб-сервер."""
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080)) 
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
-# --------------------------------------------------------------------------
-
-# --- 3. ЛОГИКА СОСТОЯНИЙ И БАЗА ЗНАНИЙ ---
-
-class NavigatorStates(StatesGroup):
-    waiting_category_text = State()
-    waiting_reaction = State()
-    waiting_final_choice = State()
-
-CATEGORIES = {
-    "Усталость / нет сил": {
-        "file": "files/ustalost.pdf", 
-        "title": "3 типов истощения", 
-        "comment": "Вижу маркеры истощения. Важно отличить лень от выгорания.",
-        "key": "fatigue"
-    },
-    "Боль": {
-        "file": "files/bol.pdf", 
-        "title": "Боль как сигнал", 
-        "comment": "Боль — это всегда крик тела о помощи. Давайте расшифруем его.",
-        "key": "pain"
-    },
-    "Вес / метаболизм": {
-        "file": "files/ves.pdf", 
-        "title": "Метаболизм", 
-        "comment": "Лишний вес часто защита, а не причина. Смотрим в корень.",
-        "key": "metabolism"
-    },
-    "Голова / стресс": {
-        "file": "files/golova.pdf", 
-        "title": "Стресс и голова", 
-        "comment": "Когда голова 'в тисках', решения принимать трудно. Начнем с разгрузки.",
-        "key": "stress"
-    },
-    "Не понимаю, что со мной": {
-        "file": "files/ne_ponimayu.pdf", 
-        "title": "Основы диагностики", 
-        "comment": "Самое сложное состояние — неопределенность. Этот файл даст структуру.",
-        "key": "unknown"
-    },
-}
-
-# Обновленные данные для реакции, включая файл для Уровня 4 (Ветвление)
-REACTION_BRANCHES = {
-    "reaction_1": {
-        "text": "Тревога — это реакция на правду. Это хорошо, значит мы попали в точку. Сейчас главное — не замирать, а перевести тревогу в действие через '6 Измерений Потери Связи'.", 
-        "action_file": "files/poter_svyazi.pdf",
-        "next_step": "Примите тревогу как компас, а не как препятствие."
-    },
-    "reaction_2": {
-        "text": "Ясность — первый шаг к исцелению. Если вы поняли механизм, тело готово откликнуться. Изучите 'Пять сигналов тела', чтобы закрепить результат.", 
-        "action_file": "files/signaly_tela.pdf",
-        "next_step": "Закрепите ясность через практику осознанности."
-    },
-    "reaction_3": {
-        "text": "Знание без плана действий часто парализует. Это нормально. Вам нужен простой алгоритм. Используйте 'Интегративный скрининг', чтобы построить карту действий.", 
-        "action_file": "files/screening.pdf",
-        "next_step": "Составьте пошаговый план на основе скрининга."
-    },
-    "reaction_4": {
-        "text": "Если не срезонировало — возможно, проблема лежит глубже или в другой плоскости. Начните с 'Самодиагностики', чтобы исключить ложные следы.", 
-        "action_file": "files/samodiagnostika.pdf",
-        "next_step": "Проведите глубокую самодиагностику по чек-листу."
-    },
-}
-
-# --- 4. АНАЛИТИКА И ЛОГИРОВАНИЕ ---
-async def log_event(user_id: int, event: str, data: dict = None):
-    """Логирование действий пользователей для анализа воронки"""
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "user_id": user_id,
-        "event": event,
-        "data": data or {}
-    }
-    
-    # Логируем в файл
-    with open("user_events.log", "a", encoding="utf-8") as f:
-        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-    
-    # Отправляем админу, если есть критичное событие
-    critical_events = {"conversion_self", "conversion_expert", "payment"}
-    if event in critical_events and ADMIN_ID:
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"🎯 Конверсия: {event}\n"
-                f"👤 Пользователь: {user_id}\n"
-                f"📊 Данные: {data}"
-            )
-        except:
-            pass
-
-# --- 5. ФУНКЦИИ ИИ И ХЕНДЛЕРЫ ---
-
-async def classify_text(user_text: str) -> str:
-    """Определяет категорию боли пользователя через GPT. Включает Fallback."""
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system", 
-                    "content": """Ты опытный врач-диагност Dr.Erkin. Проанализируй жалобу пациента и классифицируй в одну из категорий:
-                    1. Усталость / нет сил - если упоминается усталость, истощение, нет энергии, выгорание
-                    2. Боль - если есть жалобы на физическую боль, дискомфорт, хронические боли
-                    3. Вес / метаболизм - если упоминается вес, обмен веществ, питание, диеты
-                    4. Голова / стресс - если есть тревога, стресс, бессонница, ментальное напряжение
-                    5. Не понимаю, что со мной - если состояние неясное, много симптомов, непонятный диагноз
-                    
-                    ВОЗВРАЩАЙ ТОЛЬКО КЛЮЧЕВУЮ ФРАЗУ ИЗ СПИСКА ВЕРХНЕГО РЕГИСТРА"""
-                },
-                {"role": "user", "content": f"Жалоба пациента: {user_text}"}
-            ],
-            temperature=0.1,
-            max_tokens=50
-        )
-        category = response.choices[0].message.content.strip()
-        
-        # Проверяем, что категория есть в нашем списке
-        for key in CATEGORIES.keys():
-            if key.lower() in category.lower():
-                return key
-        
-        return "Не понимаю, что со мной"
-    except Exception as e:
-        logging.error(f"OpenAI Error: {e}")
-        return "Не понимаю, что со мной"
-
-@dp.message(CommandStart())
-async def start(message: types.Message, state: FSMContext):
+# ========================
+# ОБРАБОТЧИК КОМАНДЫ /START
+# ========================
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await log_event(message.from_user.id, "start")
+    await state.set_state(QuestionnaireStates.Q1_SYMPTOMS)
     
-    # Уровень 0: Приветствие
     await message.answer(
-        "👋 <b>Я — цифровой навигатор Dr.Erkin.</b>\n\n"
+        "👋 Я — цифровой навигатор Dr.Erkin.\n\n"
         "Моя задача — помочь вам точно понять, что происходит с вашим состоянием сейчас, "
         "и предложить конкретный первый шаг для стабилизации.\n\n"
-        "<i>Ответьте на 3 вопроса, и я дам вам персонализированный план.</i>"
+        "Ответьте на 3 вопроса, и я дам вам персонализированный план.",
+        reply_markup=types.ReplyKeyboardRemove()
     )
-    await asyncio.sleep(1.5)
     
-    # Уровень 1: Классификация (Вопрос)
-    await message.answer(
-        "❓ <b>Вопрос 1/3: Что больше всего беспокоит прямо сейчас?</b>\n\n"
-        "<i>Опишите 2-3 предложениями:</i>\n"
+    await ask_question_1(message)
+
+# ========================
+# ВОПРОСЫ АНКЕТЫ
+# ========================
+async def ask_question_1(message: types.Message):
+    question = (
+        "❓ **Вопрос 1/3:** Что больше всего беспокоит прямо сейчас?\n\n"
+        "Опишите 2-3 предложениями:\n"
         "• Ваши основные симптомы\n"
         "• Как давно это длится\n"
         "• Что уже пробовали\n\n"
-"<code>Пример: 'Постоянная усталость 3 месяца, не помогает сон и отдых, пропал интерес к работе'</code>"
+        "Пример: _'Постоянная усталость 3 месяца, не помогает сон и отдых, пропал интерес к работе'_"
     )
-    await state.set_state(NavigatorStates.waiting_category_text)
+    await message.answer(question, parse_mode="Markdown")
 
-@dp.message(NavigatorStates.waiting_category_text)
-async def process_category_text(message: types.Message, state: FSMContext):
+async def ask_question_2(message: types.Message):
+    question = (
+        "❓ **Вопрос 2/3:** Как эти симптомы влияют на вашу повседневную жизнь?\n\n"
+        "Например:\n"
+        "• Мешают ли работе/учебе?\n"
+        "• Влияют на отношения?\n"
+        "• Мешают обычным делам?"
+    )
+    await message.answer(question, parse_mode="Markdown")
+
+async def ask_question_3(message: types.Message):
+    question = (
+        "❓ **Вопрос 3/3:** Что бы вы хотели получить в результате?\n\n"
+        "Например:\n"
+        "• Лучше понимать свое состояние\n"
+        "• Найти подходящего специалиста\n"
+        "• Получить план действий\n"
+        "• Научиться справляться с симптомами"
+    )
+    await message.answer(question, parse_mode="Markdown")
+
+# ========================
+# ГЛАВНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ
+# ========================
+@dp.message()
+async def process_all_messages(message: types.Message, state: FSMContext):
+    """Обрабатывает все входящие сообщения"""
+    current_state = await state.get_state()
     user_id = message.from_user.id
     
-    # Проверяем длину сообщения
-    if len(message.text) < 10:
-        await message.answer("Пожалуйста, опишите подробнее (минимум 10 символов)")
+    # Если пользователь в состоянии ожидания выбора после дисклеймера
+    if current_state == QuestionnaireStates.AWAITING_CRITICAL_CHOICE.state:
+        await handle_critical_choice(message, state)
         return
     
-    status_msg = await message.answer("⏳ <i>Анализирую вашу ситуацию...</i>")
+    # Классификация сообщения
+    classification = classifier.classify(message.text, current_state)
     
-    category = await classify_text(message.text)
+    logger.info(f"Классификация: {classification.message_type.value}, "
+                f"Категория: {classification.category}, "
+                f"Личный: {classification.is_personal}")
+    
+    # ОБРАБОТКА КРИТИЧЕСКИХ ЗАПРОСОВ (ПРИОРИТЕТ 1)
+    if classification.message_type == MessageType.CRITICAL_MEDICAL_REQUEST:
+        await handle_critical_request(message, state, classification)
+        return
+    
+    # ОБРАБОТКА ОСТАЛЬНЫХ ТИПОВ СООБЩЕНИЙ
+    if current_state == QuestionnaireStates.Q1_SYMPTOMS.state:
+        await handle_answer_1(message, state, classification)
+    
+    elif current_state == QuestionnaireStates.Q2_DURATION.state:
+        await handle_answer_2(message, state, classification)
+    
+    elif current_state == QuestionnaireStates.Q3_ACTION_PLAN.state:
+        await handle_answer_3(message, state, classification)
+    
+    else:
+        # Если пользователь не в анкете, предлагаем начать
+        await message.answer(
+            "Начните анкету, чтобы получить персонализированный план. "
+            "Используйте /start",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+# ========================
+# ОБРАБОТКА КРИТИЧЕСКИХ ЗАПРОСОВ
+# ========================
+async def handle_critical_request(message: types.Message, state: FSMContext, 
+                                 classification: ClassificationResult):
+    """Обрабатывает критический медицинский запрос"""
+    user_id = message.from_user.id
+    
+    # Определяем категорию для дисклеймера
+    if classification.requires_immediate_action:
+        category = "emergency"
+    else:
+        category = "critical_diagnosis"
+    
+    # Получаем вариант для A/B тестирования
+    variant = disclaimer_manager.get_variant(category, user_id)
+    
+    if not variant:
+        # Запасной вариант, если что-то пошло не так
+        await message.answer(
+            "Ваш запрос касается медицинского вопроса. "
+            "Рекомендую обратиться к врачу. "
+            "Могу помочь подготовить информацию для консультации. "
+            "Продолжим анкету?",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        return
+    
+    # Создаем клавиатуру с вариантами ответа
+    keyboard = disclaimer_manager.create_reply_markup(variant)
+    
+    # Сохраняем состояние перед прерыванием
+    previous_state = await state.get_state()
     await state.update_data(
-        category=category,
-        user_text=message.text[:500]  # Сохраняем для аналитики
+        previous_state=previous_state,
+        critical_category=category,
+        critical_variant=variant.id,
+        critical_keywords=classification.detected_keywords
     )
     
-    await log_event(user_id, "category_selected", {"category": category})
-    
-    data = CATEGORIES[category]
-    await status_msg.delete()
-    
-    # Уровень 2: Якорь (Сообщение перед файлом)
+    # Отправляем дисклеймер
     await message.answer(
-        f"✅ <b>Вопрос 1/3 завершен</b>\n\n"
-        f"📍 <b>Направление:</b> {data['title']}\n"
-        f"📝 <b>Комментарий Dr.Erkin:</b> {data['comment']}\n\n"
-        f"<i>Скачайте материал, он подготовлен специально под ваш запрос:</i>"
+        variant.text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
-    await asyncio.sleep(1)
     
-    # Отправка файла
-    file_path = data["file"]
-    try:
-        if os.path.exists(file_path):
-            await message.answer_document(
-                FSInputFile(file_path),
-                caption=f"📂 <b>{data['title']}</b>\n<i>Изучите за 5-7 минут</i>"
-            )
-            await log_event(user_id, "file_sent", {"file": file_path})
+    # Переводим в состояние ожидания выбора
+    await state.set_state(QuestionnaireStates.AWAITING_CRITICAL_CHOICE)
+    
+    # Логируем показ дисклеймера
+    logger.info(f"Показан дисклеймер пользователю {user_id}: "
+                f"категория={category}, вариант={variant.id}, "
+                f"группа={variant.ab_test_group}")
+
+async def handle_critical_choice(message: types.Message, state: FSMContext):
+    """Обрабатывает выбор пользователя после дисклеймера"""
+    data = await state.get_data()
+    user_id = message.from_user.id
+    user_choice = message.text
+    
+    # Логируем выбор пользователя
+    logger.info(f"Пользователь {user_id} выбрал: {user_choice}")
+    
+    # 1. ПОЛЬЗОВАТЕЛЬ ХОЧЕТ ПРОДОЛЖИТЬ АНКЕТУ
+    if any(phrase in user_choice.lower() for phrase in ["пройти", "подготовиться", "да, подготов", "продолжить", "анкету"]):
+        await message.answer(
+            "✅ Отлично! Давайте вернемся к анкете и подготовим отчет для врача.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        
+        # Восстанавливаем предыдущее состояние
+        previous_state = data.get("previous_state")
+        if previous_state:
+            await state.set_state(previous_state)
+            
+            # Повторяем соответствующий вопрос
+            if previous_state == QuestionnaireStates.Q1_SYMPTOMS.state:
+                await ask_question_1(message)
+            elif previous_state == QuestionnaireStates.Q2_DURATION.state:
+                await ask_question_2(message)
+            elif previous_state == QuestionnaireStates.Q3_ACTION_PLAN.state:
+                await ask_question_3(message)
         else:
-            logging.error(f"File not found: {file_path}")
-            await message.answer(
-                "📄 <b>Ключевые идеи из материала:</b>\n\n"
-                "1. Определите тип вашего состояния\n"
-                "2. Отследите триггеры\n"
-                "3. Составьте план коррекции\n\n"
-                "<i>Техническая доработка файла завершится сегодня</i>"
-            )
-    except Exception as e:
-        logging.error(f"Error sending file: {e}")
+            # Если нет предыдущего состояния, начинаем с начала
+            await state.set_state(QuestionnaireStates.Q1_SYMPTOMS)
+            await ask_question_1(message)
     
-    await asyncio.sleep(2)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="😟 Узнал(а) многое, тревожно", callback_data="reaction_1")
-    builder.button(text="💡 Появилась ясность", callback_data="reaction_2")
-    builder.button(text="🤷 Всё совпало, но что делать?", callback_data="reaction_3")
-    builder.button(text="🤔 Не совсем про меня", callback_data="reaction_4")
-    builder.adjust(1)
-
-    # Уровень 3: Углубление (Вопрос)
-    await message.answer(
-        "🎯 <b>Вопрос 2/3: Что вы узнали о себе после изучения материала?</b>\n\n"
-        "<i>Это поможет мне дать следующий точный шаг:</i>",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(NavigatorStates.waiting_reaction)
-
-@dp.callback_query(F.data.startswith("reaction_"), NavigatorStates.waiting_reaction)
-async def process_reaction(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    reaction_key = callback.data
-    branch = REACTION_BRANCHES.get(reaction_key)
-    
-    if not branch:
-        await callback.answer("Ошибка обработки")
-        return
-    
-    await callback.answer()
-    await log_event(user_id, "reaction_selected", {"reaction": reaction_key})
-    
-    # Сохраняем реакцию в состоянии
-    await state.update_data(reaction=reaction_key)
-    
-    # Уровень 4: Ветвление (Текст и Файл)
-    await callback.message.answer(
-        f"✅ <b>Вопрос 2/3 завершен</b>\n\n"
-        f"{branch['text']}\n\n"
-        f"<b>Следующий шаг от Dr.Erkin:</b> {branch['next_step']}"
-    )
-    
-    # Отправка файла
-    action_file = branch.get("action_file")
-    if action_file and os.path.exists(action_file):
-        try:
-            await callback.message.answer_document(
-                FSInputFile(action_file),
-                caption="📂 <b>Ваш следующий шаг</b>\n<i>Примените в течение 24 часов</i>"
-            )
-            await log_event(user_id, "action_file_sent", {"file": action_file})
-        except Exception as e:
-            logging.error(f"Error sending action file: {e}")
-    
-    await asyncio.sleep(2)
-
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🧭 Разобраться самому", callback_data="path_self")
-    builder.button(text="🚀 Сопровождение эксперта", callback_data="path_expert")
-    builder.adjust(2)
-
-    # Уровень 5: Мягкий Переход (Сообщение)
-    await callback.message.answer(
-        "🎯 <b>Вопрос 3/3: Какой формат работы вам подходит?</b>\n\n"
-        "Выберите путь:\n\n"
-        "<b>🧭 Самостоятельный</b> — бесплатные материалы + обратная связь по чек-листу\n"
-        "<b>🚀 С сопровождением Dr.Erkin</b> — личная сессия + план на 30 дней\n\n"
-        "<i>Выберите вариант ниже:</i>",
-        reply_markup=builder.as_markup()
-    ) 
-    await state.set_state(NavigatorStates.waiting_final_choice)
-
-# Уровень 6: Конверсия (Самостоятельный путь)
-@dp.callback_query(F.data == "path_self", NavigatorStates.waiting_final_choice)
-async def handle_self_path(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    await callback.answer()
-    
-    # Получаем данные из состояния
-    data = await state.get_data()
-    category = data.get('category', 'Неизвестно')
-    
-    await log_event(user_id, "conversion_self", data)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📤 Отправить чек-лист на проверку", url=CONTACT_LINK_SELF)
-    builder.button(text="📚 Бесплатные материалы в канале", url=SELF_HELP_CHANNEL)
-    builder.adjust(1)
-    
-    await callback.message.answer(
-        "🧭 <b>Вы выбрали самостоятельный путь</b>\n\n"
-        "Это уважаемое решение. Для максимального результата:\n\n"
-        "1. <b>Заполните чек-лист</b> из последнего файла\n"
-        "2. <b>Пришлите его мне в личку</b> — я, Dr.Erkin, дам обратную связь\n"
-        "3. <b>Изучайте материалы</b> в нашем канале\n\n"
-        "<i>Обратная связь по чек-листу — бесплатно, без обязательств.</i>",
-        reply_markup=builder.as_markup()
-    )
-    
-    # Предлагаем записаться на консультацию через неделю
-    await asyncio.sleep(3)
-    builder2 = InlineKeyboardBuilder()
-    builder2.button(text="🚀 Записаться на консультацию к Dr.Erkin", url=CONTACT_LINK_EXPERT)
-    
-    await callback.message.answer(
-        "💡 <b>Совет от Dr.Erkin:</b>\n\n"
-        "Если через 7 дней самостоятельной работы не будет прогресса — "
-        "рассмотрите вариант с сопровождением. Иногда нужен взгляд со стороны.",
-        reply_markup=builder2.as_markup()
-    )
-    
-    await state.clear()
-
-# Уровень 6: Конверсия (Путь Сопровождения)
-@dp.callback_query(F.data == "path_expert", NavigatorStates.waiting_final_choice)
-async def handle_expert_path(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    await callback.answer()
-    
-    # Получаем данные из состояния
-    data = await state.get_data()
-    category = data.get('category', 'Неизвестно')
-    
-    await log_event(user_id, "conversion_expert", data)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📅 Забронировать диагностическую сессию", url=CONTACT_LINK_EXPERT)
-    builder.button(text="💰 Узнать стоимость пакетов", url=f"{CONTACT_LINK_EXPERT}&start=cost")
-    builder.adjust(1)
-    
-    await callback.message.answer(
-        "🚀 <b>Вы выбрали сопровождение Dr.Erkin</b>\n\n"
-        "Это верное решение для быстрых результатов:\n\n"
-        "✅ <b>Диагностическая сессия (60 минут):</b>\n"
-        "• Точно определим корень проблемы\n"
-        "• Составим план на 30 дней\n"
-        "• Дадим инструменты для самопомощи\n\n"
-        "✅ <b>Что вы получите:</b>\n"
-        "• Четкий диагноз и план от Dr.Erkin\n"
-        "• Поддержку в чате\n"
-        "• Коррекцию по мере продвижения\n\n"
-        "<i>Перейдите по ссылке, чтобы выбрать удобное время:</i>",
-        reply_markup=builder.as_markup()
-    )
-    
-    await state.clear()
-
-# Обработчик команды /stats для админа
-@dp.message(Command("stats"))
-async def get_stats(message: types.Message):
-    if str(message.from_user.id) != ADMIN_ID:
-        return
-    
-    # Простая статистика из лог-файла
-    try:
-        with open("user_events.log", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        
-        stats = {
-            "starts": 0,
-            "conversions_self": 0,
-            "conversions_expert": 0,
-            "categories": {}
-        }
-        
-        for line in lines:
-            try:
-                data = json.loads(line.strip())
-                event = data.get("event")
-                
-                if event == "start":
-                    stats["starts"] += 1
-                elif event == "conversion_self":
-                    stats["conversions_self"] += 1
-                elif event == "conversion_expert":
-                    stats["conversions_expert"] += 1
-                elif event == "category_selected":
-                    category = data.get("data", {}).get("category")
-                    if category:
-                        stats["categories"][category] = stats["categories"].get(category, 0) + 1
-            except:
-                continue
-        
-        total_conversions = stats["conversions_self"] + stats["conversions_expert"]
-        conversion_rate = (total_conversions / stats["starts"] * 100) if stats["starts"] > 0 else 0
-        
-        response = (
-            "📊 <b>Статистика бота Dr.Erkin:</b>\n\n"
-            f"👥 Всего стартов: {stats['starts']}\n"
-            f"🧭 Самостоятельных: {stats['conversions_self']}\n"
-            f"🚀 Сопровождение: {stats['conversions_expert']}\n"
-            f"📈 Конверсия: {conversion_rate:.1f}%\n\n"
-            "<b>Распределение по категориям:</b>\n"
-        )
-        
-        for category, count in stats["categories"].items():
-            percentage = (count / stats['starts'] * 100) if stats['starts'] > 0 else 0
-            response += f"• {category}: {count} ({percentage:.1f}%)\n"
-        
-        await message.answer(response)
-        
-    except FileNotFoundError:
-        await message.answer("Файл статистики не найден")
-
-# ХЕНДЛЕР ОБЩЕГО ТЕКСТА (UX FIX)
-@dp.message() 
-async def handle_any_message(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    
-    if current_state is None:
-        # Если пользователь пишет вне сценария
+    # 2. ПОЛЬЗОВАТЕЛЬ ПРОСИТ ВРАЧА
+    elif any(phrase in user_choice.lower() for phrase in ["врач", "консультац", "срочн", "помощь"]):
         await message.answer(
-            "🤖 <b>Цифровой навигатор Dr.Erkin</b>\n\n"
-            "Я вижу, вы хотите начать диагностику.\n\n"
-            "Чтобы начать, нажмите: /start\n\n"
-            "<i>Это запустит пошаговый анализ вашего состояния.</i>"
+            "👨‍⚕️ **Понял. Вот варианты получения помощи:**\n\n"
+            "1. **Telegram-каналы с проверенными специалистами:** @psyhelp_list\n"
+            "2. **Горячая линия психологической помощи:** 8-800-2000-122\n"
+            "3. **Скорая помощь:** 103 или 112\n\n"
+            "Когда будете готовы структурировать симптомы для врача — "
+            "напишите /start в любое время.",
+            reply_markup=types.ReplyKeyboardRemove()
         )
-    elif current_state == NavigatorStates.waiting_reaction:
-        # Если пользователь пишет текст вместо нажатия кнопки
+        await state.clear()
+    
+    # 3. ОТМЕНА ИЛИ ОТЛОЖИТЬ
+    else:
         await message.answer(
-            "Пожалуйста, выберите один из вариантов кнопкой ниже.\n"
-            "Это важно для точной диагностики."
+            "Хорошо, я буду здесь, когда будете готовы продолжить. "
+            "Используйте /start, чтобы начать анкету заново.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        await state.clear()
+
+# ========================
+# ОБРАБОТКА ОТВЕТОВ НА ВОПРОСЫ
+# ========================
+async def handle_answer_1(message: types.Message, state: FSMContext, 
+                         classification: ClassificationResult):
+    """Обрабатывает ответ на вопрос 1"""
+    if classification.message_type == MessageType.ANSWER_TO_QUESTION:
+        # Сохраняем ответ
+        await state.update_data(answer_1=message.text)
+        
+        # Переходим к вопросу 2
+        await state.set_state(QuestionnaireStates.Q2_DURATION)
+        await ask_question_2(message)
+    else:
+        # Если не ответ, просим ответить на вопрос
+        await message.answer(
+            "Пожалуйста, ответьте на вопрос о ваших симптомах. "
+            "Опишите, что беспокоит, как давно и что уже пробовали.",
+            reply_markup=types.ReplyKeyboardRemove()
         )
 
-# --- 6. ЗАПУСК ПРОГРАММЫ (MAIN) ---
+async def handle_answer_2(message: types.Message, state: FSMContext,
+                         classification: ClassificationResult):
+    """Обрабатывает ответ на вопрос 2"""
+    if classification.message_type == MessageType.ANSWER_TO_QUESTION:
+        await state.update_data(answer_2=message.text)
+        await state.set_state(QuestionnaireStates.Q3_ACTION_PLAN)
+        await ask_question_3(message)
+    else:
+        await message.answer(
+            "Пожалуйста, опишите, как симптомы влияют на вашу жизнь.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
 
+async def handle_answer_3(message: types.Message, state: FSMContext,
+                         classification: ClassificationResult):
+    """Обрабатывает ответ на вопрос 3"""
+    if classification.message_type == MessageType.ANSWER_TO_QUESTION:
+        await state.update_data(answer_3=message.text)
+        
+        # ЗАВЕРШЕНИЕ АНКЕТЫ
+        data = await state.get_data()
+        
+        await message.answer(
+            "🎉 **Спасибо за ответы!**\n\n"
+            "На основе ваших данных я подготовлю персонализированный план действий.\n\n"
+            "📄 **В ближайшее время вы получите:**\n"
+            "• Пошаговый план на ближайшие 7 дней\n"
+            "• Чек-лист самодиагностики\n"
+            "• Готовые формулировки для разговора с врачом",
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        
+        # Пока просто завершаем (позже добавим отправку PDF)
+        await state.clear()
+        
+        logger.info(f"Пользователь {message.from_user.id} завершил анкету")
+    else:
+        await message.answer(
+            "Пожалуйста, опишите, что вы хотите получить в результате.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+# ========================
+# ЗАПУСК БОТА
+# ========================
 async def main():
-    # Настройка логирования
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('bot.log', encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    
-    # Запуск фиктивного веб-сервера для Render
-    await start_web_server()
-    
-    # Удаляем вебхук (на всякий случай) и запускаем поллинг
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    logging.info("Бот Dr.Erkin запущен...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    logger.info("Бот запускается...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Bot shut down gracefully.")
-    except Exception as e:
-        logging.error(f"Fatal error: {e}")
-
-
-
+    asyncio.run(main())

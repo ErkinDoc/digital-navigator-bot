@@ -12,10 +12,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties # <-- ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ: Новый импорт для parse_mode
+from aiogram.client.default import DefaultBotProperties # <-- ИСПРАВЛЕНИЕ СИНТАКСИСА
 
 # Импорты для хостинга/ИИ
-from aiohttp import web # <-- ИСПРАВЛЕНИЕ ДЛЯ RENDER: Для фиктивного веб-сервера
+from aiohttp import web # <-- ИСПРАВЛЕНИЕ ДЛЯ RENDER
 import openai
 
 # --- 1. НАСТРОЙКИ И КОНФИГУРАЦИЯ ---
@@ -32,23 +32,22 @@ if not BOT_TOKEN or not OPENAI_API_KEY:
 
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-# Инициализация Bot с исправленным синтаксисом parse_mode (для aiogram 3.7+)
+# Инициализация Bot с исправленным синтаксисом parse_mode
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# --- 2. RENDER HEALTH CHECK (КОД ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ С ПОРТАМИ) ---
+# --- 2. RENDER HEALTH CHECK ---
 async def health_check(request):
-    """Простой HTTP ответ для обмана Render, чтобы он не убил процесс."""
+    """Простой HTTP ответ для обмана Render."""
     return web.Response(text="Bot is running OK")
 
 async def start_web_server():
-    """Запускает фиктивный веб-сервер, чтобы Render видел открытый порт."""
+    """Запускает фиктивный веб-сервер."""
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Получаем порт из переменной окружения Render
     port = int(os.environ.get("PORT", 8080)) 
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -172,6 +171,7 @@ async def process_reaction(callback: types.CallbackQuery, state: FSMContext):
         "На этом этапе у нас развилка:",
         reply_markup=builder.as_markup()
     )
+    # state.clear() здесь остается, чтобы закончить сессию после выбора пути
     await state.clear() 
 
 @dp.callback_query(F.data == "path_self")
@@ -198,13 +198,32 @@ async def handle_expert_path(callback: types.CallbackQuery):
         "Мудрое решение. Нажмите кнопку ниже, чтобы написать мне лично.",
         reply_markup=builder.as_markup()
     )
+    
+# --- 5. НОВЫЙ ХЕНДЛЕР ОБЩЕГО ТЕКСТА (УЛУЧШЕНИЕ UX) ---
 
-# --- 5. ЗАПУСК ПРОГРАММЫ (MAIN) ---
+@dp.message() # Ловит ЛЮБОЕ сообщение, которое не было поймано другими хендлерами
+async def handle_any_message(message: types.Message, state: FSMContext):
+    # Используем get_state() чтобы проверить, находится ли бот в активном сценарии
+    current_state = await state.get_state()
+    
+    # Если state.clear() был вызван, то current_state будет None
+    if current_state is None:
+        await message.answer(
+            "Я вижу, вы хотите обсудить что-то еще. \n\n"
+            "Моя текущая задача — диагностика. Чтобы начать новый цикл анализа симптомов, пожалуйста, воспользуйтесь командой: ** /start **"
+        )
+    # Если бот все еще в каком-то состоянии (хотя не должен быть, но на всякий случай), 
+    # ничего не делаем, чтобы избежать зацикливания.
+    else:
+        pass
+
+
+# --- 6. ЗАПУСК ПРОГРАММЫ (MAIN) ---
 
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     
-    # Запуск фиктивного веб-сервера для Render и одновременный запуск поллинга
+    # Запуск фиктивного веб-сервера для Render
     await start_web_server()
     
     print("Бот запущен...")

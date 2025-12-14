@@ -206,8 +206,7 @@ async def start(message: types.Message, state: FSMContext):
         "• Ваши основные симптомы\n"
         "• Как давно это длится\n"
         "• Что уже пробовали\n\n"
-        "<code>Пример: 'Постоянная усталость 3 месяца, не помогает сон и отдых, '
-        'пропал интерес к работе'</code>"
+"<code>Пример: 'Постоянная усталость 3 месяца, не помогает сон и отдых, пропал интерес к работе'</code>"
     )
     await state.set_state(NavigatorStates.waiting_category_text)
 
@@ -514,3 +513,4 @@ if __name__ == "__main__":
         logging.info("Bot shut down gracefully.")
     except Exception as e:
         logging.error(f"Fatal error: {e}")
+

@@ -27,7 +27,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")  # Для аналитики
 # Ссылки для конверсии (разные для разных путей)
 CONTACT_LINK_SELF = "https://t.me/DrErkin?start=feedback"
 CONTACT_LINK_EXPERT = "https://t.me/DrErkin?start=consult"
-SELF_HELP_CHANNEL = "https://t.me/your_channel"  # Канал с материалами
+SELF_HELP_CHANNEL = "https://t.me/drerkin_navigator_bot"  # Ваш канал
 
 # Проверка и инициализация
 if not BOT_TOKEN or not OPENAI_API_KEY:
@@ -159,7 +159,7 @@ async def classify_text(user_text: str) -> str:
             messages=[
                 {
                     "role": "system", 
-                    "content": """Ты опытный врач-диагност. Проанализируй жалобу пациента и классифицируй в одну из категорий:
+                    "content": """Ты опытный врач-диагност Dr.Erkin. Проанализируй жалобу пациента и классифицируй в одну из категорий:
                     1. Усталость / нет сил - если упоминается усталость, истощение, нет энергии, выгорание
                     2. Боль - если есть жалобы на физическую боль, дискомфорт, хронические боли
                     3. Вес / метаболизм - если упоминается вес, обмен веществ, питание, диеты
@@ -192,7 +192,7 @@ async def start(message: types.Message, state: FSMContext):
     
     # Уровень 0: Приветствие
     await message.answer(
-        "👋 <b>Я — ваш цифровой навигатор.</b>\n\n"
+        "👋 <b>Я — цифровой навигатор Dr.Erkin.</b>\n\n"
         "Моя задача — помочь вам точно понять, что происходит с вашим состоянием сейчас, "
         "и предложить конкретный первый шаг для стабилизации.\n\n"
         "<i>Ответьте на 3 вопроса, и я дам вам персонализированный план.</i>"
@@ -237,7 +237,7 @@ async def process_category_text(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ <b>Вопрос 1/3 завершен</b>\n\n"
         f"📍 <b>Направление:</b> {data['title']}\n"
-        f"📝 <b>Комментарий:</b> {data['comment']}\n\n"
+        f"📝 <b>Комментарий Dr.Erkin:</b> {data['comment']}\n\n"
         f"<i>Скачайте материал, он подготовлен специально под ваш запрос:</i>"
     )
     await asyncio.sleep(1)
@@ -300,7 +300,7 @@ async def process_reaction(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"✅ <b>Вопрос 2/3 завершен</b>\n\n"
         f"{branch['text']}\n\n"
-        f"<b>Следующий шаг:</b> {branch['next_step']}"
+        f"<b>Следующий шаг от Dr.Erkin:</b> {branch['next_step']}"
     )
     
     # Отправка файла
@@ -327,7 +327,7 @@ async def process_reaction(callback: types.CallbackQuery, state: FSMContext):
         "🎯 <b>Вопрос 3/3: Какой формат работы вам подходит?</b>\n\n"
         "Выберите путь:\n\n"
         "<b>🧭 Самостоятельный</b> — бесплатные материалы + обратная связь по чек-листу\n"
-        "<b>🚀 С сопровождением</b> — личная сессия + план на 30 дней\n\n"
+        "<b>🚀 С сопровождением Dr.Erkin</b> — личная сессия + план на 30 дней\n\n"
         "<i>Выберите вариант ниже:</i>",
         reply_markup=builder.as_markup()
     )
@@ -347,14 +347,14 @@ async def handle_self_path(callback: types.CallbackQuery, state: FSMContext):
     
     builder = InlineKeyboardBuilder()
     builder.button(text="📤 Отправить чек-лист на проверку", url=CONTACT_LINK_SELF)
-    builder.button(text="📚 Бесплатные материалы", url=SELF_HELP_CHANNEL)
+    builder.button(text="📚 Бесплатные материалы в канале", url=SELF_HELP_CHANNEL)
     builder.adjust(1)
     
     await callback.message.answer(
         "🧭 <b>Вы выбрали самостоятельный путь</b>\n\n"
         "Это уважаемое решение. Для максимального результата:\n\n"
         "1. <b>Заполните чек-лист</b> из последнего файла\n"
-        "2. <b>Пришлите его мне в личку</b> — дам обратную связь\n"
+        "2. <b>Пришлите его мне в личку</b> — я, Dr.Erkin, дам обратную связь\n"
         "3. <b>Изучайте материалы</b> в нашем канале\n\n"
         "<i>Обратная связь по чек-листу — бесплатно, без обязательств.</i>",
         reply_markup=builder.as_markup()
@@ -363,10 +363,10 @@ async def handle_self_path(callback: types.CallbackQuery, state: FSMContext):
     # Предлагаем записаться на консультацию через неделю
     await asyncio.sleep(3)
     builder2 = InlineKeyboardBuilder()
-    builder2.button(text="🚀 Записаться на консультацию", url=CONTACT_LINK_EXPERT)
+    builder2.button(text="🚀 Записаться на консультацию к Dr.Erkin", url=CONTACT_LINK_EXPERT)
     
     await callback.message.answer(
-        "💡 <b>Совет от навигатора:</b>\n\n"
+        "💡 <b>Совет от Dr.Erkin:</b>\n\n"
         "Если через 7 дней самостоятельной работы не будет прогресса — "
         "рассмотрите вариант с сопровождением. Иногда нужен взгляд со стороны.",
         reply_markup=builder2.as_markup()
@@ -392,14 +392,14 @@ async def handle_expert_path(callback: types.CallbackQuery, state: FSMContext):
     builder.adjust(1)
     
     await callback.message.answer(
-        "🚀 <b>Вы выбрали сопровождение эксперта</b>\n\n"
+        "🚀 <b>Вы выбрали сопровождение Dr.Erkin</b>\n\n"
         "Это верное решение для быстрых результатов:\n\n"
         "✅ <b>Диагностическая сессия (60 минут):</b>\n"
         "• Точно определим корень проблемы\n"
         "• Составим план на 30 дней\n"
         "• Дадим инструменты для самопомощи\n\n"
         "✅ <b>Что вы получите:</b>\n"
-        "• Четкий диагноз и план\n"
+        "• Четкий диагноз и план от Dr.Erkin\n"
         "• Поддержку в чате\n"
         "• Коррекцию по мере продвижения\n\n"
         "<i>Перейдите по ссылке, чтобы выбрать удобное время:</i>",
@@ -448,7 +448,7 @@ async def get_stats(message: types.Message):
         conversion_rate = (total_conversions / stats["starts"] * 100) if stats["starts"] > 0 else 0
         
         response = (
-            "📊 <b>Статистика бота:</b>\n\n"
+            "📊 <b>Статистика бота Dr.Erkin:</b>\n\n"
             f"👥 Всего стартов: {stats['starts']}\n"
             f"🧭 Самостоятельных: {stats['conversions_self']}\n"
             f"🚀 Сопровождение: {stats['conversions_expert']}\n"
@@ -473,7 +473,7 @@ async def handle_any_message(message: types.Message, state: FSMContext):
     if current_state is None:
         # Если пользователь пишет вне сценария
         await message.answer(
-            "🤖 <b>Цифровой навигатор</b>\n\n"
+            "🤖 <b>Цифровой навигатор Dr.Erkin</b>\n\n"
             "Я вижу, вы хотите начать диагностику.\n\n"
             "Чтобы начать, нажмите: /start\n\n"
             "<i>Это запустит пошаговый анализ вашего состояния.</i>"
@@ -504,7 +504,7 @@ async def main():
     # Удаляем вебхук (на всякий случай) и запускаем поллинг
     await bot.delete_webhook(drop_pending_updates=True)
     
-    logging.info("Бот запущен...")
+    logging.info("Бот Dr.Erkin запущен...")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":

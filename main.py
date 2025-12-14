@@ -10,24 +10,16 @@ from aiogram.fsm.state import State, StatesGroup
 # Импортируем наши модули
 from classifiers.critical_filter import CriticalRequestClassifier, MessageType, ClassificationResult
 from responses.disclaimer_variants import DisclaimerManager
-import asyncio
-import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-
-# Импортируем наши модули
-from classifiers.critical_filter import CriticalRequestClassifier, MessageType, ClassificationResult
-from responses.disclaimer_variants import DisclaimerManager
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== ВАЖНО: ВСТАВЬТЕ ВАШ РЕАЛЬНЫЙ ТОКЕН ЗДЕСЬ =====
+# ===== ВАЖНО: Токен берется из переменной окружения =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    logger.error("Токен бота не найден! Установите переменную BOT_TOKEN на Render.")
+    exit(1)
 # ====================================================
 
 # Инициализация

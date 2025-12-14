@@ -30,8 +30,12 @@ CONTACT_LINK_EXPERT = "https://t.me/DrErkin?start=consult"
 SELF_HELP_CHANNEL = "https://t.me/drerkin_navigator_bot"  # Ваш канал
 
 # Проверка и инициализация
-if not BOT_TOKEN or not OPENAI_API_KEY:
-    sys.exit("Ошибка: Не найдены BOT_TOKEN или OPENAI_API_KEY в .env файле")
+# Проверка и инициализация
+if not BOT_TOKEN:
+    logging.error("BOT_TOKEN не найден. Проверьте переменные окружения в Render.")
+    # Не завершаем работу, а пытаемся продолжить
+if not OPENAI_API_KEY:
+    logging.error("OPENAI_API_KEY не найден. Функция ИИ не будет работать.")
 
 client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)  # Асинхронный клиент
 
@@ -513,5 +517,6 @@ if __name__ == "__main__":
         logging.info("Bot shut down gracefully.")
     except Exception as e:
         logging.error(f"Fatal error: {e}")
+
 
 
